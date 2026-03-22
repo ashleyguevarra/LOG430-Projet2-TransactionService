@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: transaction
+  datasource:
+    url: jdbc:mysql://localhost:${MYSQL_PORT:3307}/${MYSQL_DATABASE:transaction-db}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${MYSQL_USER:myuser}
+    password: ${MYSQL_PASSWORD:secret}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+
+server:
+  port: 8081
