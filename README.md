@@ -28,7 +28,7 @@ MySQL est démarré via `compose.yaml` grâce à `spring-boot-docker-compose` au
 - **Traces OTLP** : envoie vers `http://localhost:4318/v1/traces` par défaut. Avec `docker compose up`, le service **Jaeger** démarre aussi ; UI : `http://localhost:16686` (chercher le service `transaction`).
 - Pour surcharger l’URL OTLP : variable `MANAGEMENT_OTLP_TRACING_ENDPOINT` (URL complète, ex. `http://jaeger:4318/v1/traces` si l’app tourne dans le même réseau Docker).
 
-Les logs console incluent `traceId` et `spanId` (Micrometer) pour corréler avec Jaeger.
+Les logs console sont **JSON structurés** par défaut (`@timestamp`, `level`, `logger`, `message`, MDC dont `traceId` / `spanId` quand une requête est tracée, `service.name`). Compatible agrégation (ELK, Loki, etc.). Pour une console lisible en local : profil Spring **`human`** (`--spring.profiles.active=human`).
 
 ## Tests
 

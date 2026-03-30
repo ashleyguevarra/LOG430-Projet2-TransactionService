@@ -48,11 +48,11 @@ management:
     tracing:
       endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
 
+# Niveaux : format console = JSON structuré par défaut (logback-spring.xml), exigence cahier LOG430.
+# Console lisible humain : ./mvnw spring-boot:run -Dspring-boot.run.profiles=human
 logging:
   level:
     projet2.banks.transaction: DEBUG
-  pattern:
-    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
 
 app:
   services:

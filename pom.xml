@@ -62,6 +62,13 @@
 			<artifactId>opentelemetry-exporter-otlp</artifactId>
 		</dependency>
 
+		<!-- Logs structurés JSON (cahier LOG430 — corrélation trace/span via MDC) -->
+		<dependency>
+			<groupId>net.logstash.logback</groupId>
+			<artifactId>logstash-logback-encoder</artifactId>
+			<version>8.0</version>
+		</dependency>
+
 		<!-- Runtime -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
