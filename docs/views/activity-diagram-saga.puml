@@ -1,0 +1,63 @@
+@startuml activity-diagram-saga
+title TransactionService — Cycle de vie saga (consommation Kafka)
+
+|Orchestrateur|
+:Produit événement Kafka\n{id: "uuid-..."};
+
+|KafkaConfig\n(ErrorHandler)|
+:Réception du message\npar le container;
+
+|TransactionEventListener|
+:@KafkaListener reçoit le message;
+:objectMapper.readTree(payload);
+
+if (Champ "id" absent ?) then (oui)
+  :log.warn — skip;
+  stop
+endif
+
+:mapTopicToState(topic);
+
+note right
+  transaction.routed   → CREATED_PENDING
+  transaction.accepted → ACCEPTED
+  transaction.settled  → SETTLED
+  transaction.rejected → REJECTED
+  transaction.failed   → REFUSED
+  transaction.expired  → EXPIRED
+end note
+
+if (Topic non mappé ?) then (oui)
+  :log.warn — skip;
+  stop
+endif
+
+|TransactionService|
+:updateStatus(id, newStatus)\n@Transactional;
+:findById(id) → MySQL;
+
+if (Transaction introuvable ?) then (oui)
+  :ResponseStatusException 404;
+  |KafkaConfig\n(ErrorHandler)|
+  :Erreur remontée au ErrorHandler;
+  if (Tentatives < 3 ?) then (oui)
+    :Retry après 1 s\n(FixedBackOff);
+    note right
+      Protège contre les
+      erreurs DB transitoires
+    end note
+    -> retenter;
+  else (épuisées)
+    :Publier sur {topic}.DLT\n(DeadLetterPublishingRecoverer);
+    :log.error — message non traitable;
+    stop
+  endif
+endif
+
+|TransactionService|
+:tx.setStatus(newStatus);
+:repository.save(tx);
+:log.info — statut mis à jour;
+stop
+
+@enduml

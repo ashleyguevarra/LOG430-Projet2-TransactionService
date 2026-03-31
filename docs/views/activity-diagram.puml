@@ -1,0 +1,32 @@
+@startuml activity-diagram
+title TransactionService — Création d'un transfert
+
+|Orchestrateur|
+start
+:Clés déjà validées via KeyService;
+:POST /api/v2/transactions\n{senderKey, receiverKey, amount, participantId};
+
+|TransactionController|
+:Valider le body (@Valid);
+
+if (Validation échoue ?) then (oui)
+  :HTTP 400 Bad Request;
+  stop
+endif
+
+|TransactionService|
+:saveTransactionAndOutbox()\n@Transactional — atomique;
+note right
+  Rollback automatique si l'un
+  des deux inserts échoue
+end note
+:→ INSERT transactions\n(UUID, status=CREATED, participantId);
+:→ INSERT outbox_events\n(topic="transaction.created", published=false);
+
+:HTTP 201 TransactionResponse;
+
+|Orchestrateur|
+:Reçoit {id, status: CREATED, ...};
+stop
+
+@enduml

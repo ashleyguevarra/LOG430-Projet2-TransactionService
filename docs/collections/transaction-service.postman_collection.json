@@ -1,0 +1,524 @@
+{
+  "info": {
+    "name": "TransactionService",
+    "_postman_id": "ts-local-tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Tests manuels du TransactionService (port 8081 local / 8085 Docker).\n\nArchitecture : TransactionService ne contacte plus KeyService ni l'Orchestrateur.\nIl est appelé PAR l'Orchestrateur avec des données déjà validées.\nToutes les requêtes CRUD fonctionnent dès que la DB est disponible.\n\nPrérequis isolation (sans stack complet) :\n  docker compose up transaction-db\n  ./mvnw spring-boot:run\n\nPrérequis stack complet :\n  docker compose up  (depuis LOG430-Projet2-Infra/)\n\nOrdre recommandé :\n  1. Health\n  2. Saga Simulation → Settle  (stocke transactionId)\n  3. Transactions → GET by ID\n  4. Transactions → POST Create\n  5. Transactions → Réconciliation"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081",
+      "type": "string",
+      "description": "Port local. Utiliser http://localhost:8085 avec docker compose."
+    },
+    {
+      "key": "transactionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "participantId",
+      "value": "PART-BANK-A-001",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Actuator",
+      "description": "Endpoints de santé et métriques. Fonctionnent en isolation totale.",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Service UP', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.eql('UP');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Info",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/info"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Metrics (liste)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has names array', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('names');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Metrics — JVM memory",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/metrics/jvm.memory.used"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has measurements', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('measurements');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus (scrape)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/prometheus"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type Prometheus text format', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/plain');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Saga Simulation (isolation totale)",
+      "description": "Crée une transaction directement en DB et l'amène à un état terminal de façon synchrone.\nAucune dépendance externe — fonctionne sans Kafka, sans Orchestrateur, sans KeyService.\n\nFlows :\n  /settle → CREATED → ACCEPTED → SETTLED\n  /reject → CREATED → REFUSED  → REJECTED\n  /expire → CREATED → EXPIRED\n\nChaque requête stocke l'ID dans {{transactionId}} pour les requêtes suivantes.",
+      "item": [
+        {
+          "name": "Settle : CREATED → ACCEPTED → SETTLED",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v2/saga/transactions/settle"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Status SETTLED', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.eql('SETTLED');",
+                  "  pm.expect(body.id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('transactionId', body.id);",
+                  "  console.log('transactionId set to', body.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject : CREATED → REFUSED → REJECTED",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v2/saga/transactions/reject"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Status REJECTED', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.eql('REJECTED');",
+                  "  pm.collectionVariables.set('transactionId', body.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Expire : CREATED → EXPIRED",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v2/saga/transactions/expire"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Status EXPIRED', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.eql('EXPIRED');",
+                  "  pm.collectionVariables.set('transactionId', body.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Transactions — CRUD",
+      "description": "Opérations sur les transactions.\n\nPOST Create simule un appel venant de l'Orchestrateur (clés déjà validées).\nPlus aucune dépendance vers KeyService ou l'Orchestrateur — fonctionne dès que la DB est disponible.",
+      "item": [
+        {
+          "name": "POST Create Transaction",
+          "description": "Simule l'appel de l'Orchestrateur vers TransactionService.\nLes clés sont considérées déjà validées par l'Orchestrateur via KeyService.\nRequiert uniquement la DB (transaction-db).",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/v2/transactions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"senderKey\": \"KEY-SENDER-001\",\n  \"receiverKey\": \"KEY-RECEIVER-001\",\n  \"amount\": 100.00,\n  \"participantId\": \"{{participantId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('Réponse valide', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f-]{36}$/i);",
+                  "  pm.expect(body.status).to.eql('CREATED');",
+                  "  pm.expect(body.senderKey).to.eql('KEY-SENDER-001');",
+                  "  pm.expect(body.receiverKey).to.eql('KEY-RECEIVER-001');",
+                  "  pm.expect(body.amount).to.eql(100);",
+                  "  pm.expect(body.participantId).to.eql(pm.collectionVariables.get('participantId'));",
+                  "  pm.collectionVariables.set('transactionId', body.id);",
+                  "  console.log('transactionId set to', body.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST Create — montant invalide (< 0.01)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/v2/transactions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"senderKey\": \"KEY-SENDER-001\",\n  \"receiverKey\": \"KEY-RECEIVER-001\",\n  \"amount\": -5.00,\n  \"participantId\": \"{{participantId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 — montant invalide', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST Create — receiverKey manquant",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/v2/transactions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"senderKey\": \"KEY-SENDER-001\",\n  \"amount\": 50.00,\n  \"participantId\": \"{{participantId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 — champ manquant', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST Create — senderKey vide",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/v2/transactions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"senderKey\": \"\",\n  \"receiverKey\": \"KEY-RECEIVER-001\",\n  \"amount\": 50.00,\n  \"participantId\": \"{{participantId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 — senderKey blank', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST Create — participantId manquant",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{baseUrl}}/api/v2/transactions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"senderKey\": \"KEY-SENDER-001\",\n  \"receiverKey\": \"KEY-RECEIVER-001\",\n  \"amount\": 50.00\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 — participantId manquant', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET All Transactions",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v2/transactions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is array', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.be.an('array');",
+                  "  if (body.length > 0) {",
+                  "    pm.collectionVariables.set('transactionId', body[0].id);",
+                  "    pm.test('Champs attendus présents', () => {",
+                  "      pm.expect(body[0]).to.include.all.keys(",
+                  "        'id','senderKey','receiverKey','amount','participantId','status','createdAt'",
+                  "      );",
+                  "    });",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET Transaction by ID",
+          "description": "Utilise {{transactionId}} défini par POST Create ou Saga Simulation.",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v2/transactions/{{transactionId}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('transactionId')) {",
+                  "  console.warn('transactionId vide — lancez POST Create ou Saga Simulation en premier');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Champs attendus présents', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.include.all.keys(",
+                  "    'id','senderKey','receiverKey','amount','participantId','status','createdAt','updatedAt'",
+                  "  );",
+                  "  pm.expect(body.id).to.eql(pm.collectionVariables.get('transactionId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET Transaction by ID — 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v2/transactions/00000000-0000-0000-0000-000000000000"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Réconciliation (UC08)",
+      "description": "Filtre les transactions par participantId et plage de dates.\nHeader X-Participant-Id obligatoire.\nParams : startDate et endDate au format ISO-8601 (ex: 2026-01-01T00:00:00).",
+      "item": [
+        {
+          "name": "GET Réconciliation — plage valide",
+          "description": "Retourne les transactions du participant sur les 24 dernières heures.",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Participant-Id", "value": "{{participantId}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/transactions/reconciliation?startDate=2026-01-01T00:00:00&endDate=2099-12-31T23:59:59",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v2", "transactions", "reconciliation"],
+              "query": [
+                { "key": "startDate", "value": "2026-01-01T00:00:00" },
+                { "key": "endDate",   "value": "2099-12-31T23:59:59" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Réponse est un tableau', () => {",
+                  "  pm.expect(pm.response.json()).to.be.an('array');",
+                  "});",
+                  "pm.test('Toutes les transactions appartiennent au participant', () => {",
+                  "  const body = pm.response.json();",
+                  "  const pid = pm.collectionVariables.get('participantId');",
+                  "  body.forEach(tx => pm.expect(tx.participantId).to.eql(pid));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET Réconciliation — header X-Participant-Id manquant",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/transactions/reconciliation?startDate=2026-01-01T00:00:00&endDate=2099-12-31T23:59:59",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v2", "transactions", "reconciliation"],
+              "query": [
+                { "key": "startDate", "value": "2026-01-01T00:00:00" },
+                { "key": "endDate",   "value": "2099-12-31T23:59:59" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 — header manquant', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET Réconciliation — participant sans transactions",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Participant-Id", "value": "PART-INEXISTANT-999" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/transactions/reconciliation?startDate=2026-01-01T00:00:00&endDate=2099-12-31T23:59:59",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v2", "transactions", "reconciliation"],
+              "query": [
+                { "key": "startDate", "value": "2026-01-01T00:00:00" },
+                { "key": "endDate",   "value": "2099-12-31T23:59:59" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 — tableau vide', () => pm.response.to.have.status(200));",
+                  "pm.test('Tableau vide', () => {",
+                  "  pm.expect(pm.response.json()).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

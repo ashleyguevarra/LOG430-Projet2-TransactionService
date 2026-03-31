@@ -1,0 +1,103 @@
+@startuml component-diagram
+title TransactionService — Component Diagram
+
+skinparam componentStyle rectangle
+
+actor "Orchestrateur (.NET)" as orchestrator
+actor "API Gateway"          as gateway
+actor "k6 / Tests"           as k6
+
+rectangle "TransactionService (Spring Boot :8085)" {
+
+  rectangle "REST Layer" {
+    component [TransactionController\n/api/v2/transactions] as tc
+    component [SagaTestController\n/api/v2/saga/transactions] as stc
+  }
+
+  rectangle "Service Layer" {
+    component [TransactionService] as ts
+    component [OutboxPublisher\n@Scheduled] as op
+  }
+
+  rectangle "Event Layer" {
+    component [TransactionEventListener\n@KafkaListener] as tel
+  }
+
+  rectangle "Config" {
+    component [KafkaConfig\nConsumerFactory\nDefaultErrorHandler\nFixedBackOff + DLT] as kc
+    component [AppConfig\nObjectMapper] as ac
+  }
+
+  database "MySQL\ntransaction-db\n[transactions]\n[outbox_events]" as db
+}
+
+rectangle "Kafka Broker (:9092)" {
+  queue "transaction.created"  as tc_topic
+  queue "transaction.routed"   as tr
+  queue "transaction.accepted" as ta
+  queue "transaction.settled"  as tset
+  queue "transaction.rejected" as trej
+  queue "transaction.failed"   as tf
+  queue "transaction.expired"  as te
+  queue "{topic}.DLT\n(dead-letter)" as dlt
+}
+
+rectangle "Orchestrateur (.NET) :5000" {
+  component [Kafka Consumer\ntransaction.created] as orch_consumer
+  component [Kafka Producer\n(routing / lifecycle)] as orch_producer
+  component [Webhook dispatcher\n(notifie les banques)] as orch_webhook
+}
+
+rectangle "KeyService (:8083)" as ks {
+  component [GET /api/v2/keys/resolve/{key}] as ksr
+}
+
+' Appels entrants vers TransactionService
+orchestrator --> tc : POST /api/v2/transactions\n(clés déjà validées)
+gateway      --> tc : GET /api/v2/transactions/{id}
+gateway      --> tc : GET /api/v2/transactions\n(reconciliation)
+k6           --> stc : GET /settle | /reject | /expire
+
+' Flux internes
+tc  --> ts
+stc --> ts
+ts  --> db : INSERT transactions + outbox_events\n(@Transactional)
+op  --> db : SELECT outbox_events WHERE published=false
+op  --> tc_topic : KafkaTemplate.send()
+op  --> db : UPDATE published=true
+
+' Kafka event listener → mise à jour statut local
+tr   --> tel
+ta   --> tel
+tset --> tel
+trej --> tel
+tf   --> tel
+te   --> tel
+tel  --> ts : updateStatus() @Transactional
+
+' Error handling : retry → DLT
+tel ..> dlt : échec après 2 retries\n(DeadLetterPublishingRecoverer)
+
+' Orchestrateur consomme transaction.created et produit les topics lifecycle
+tc_topic --> orch_consumer
+orch_consumer --> orch_producer
+orch_producer --> tr
+orch_producer --> ta
+orch_producer --> tset
+orch_producer --> trej
+orch_producer --> tf
+orch_producer --> te
+
+' L'Orchestrateur notifie les banques via webhooks (hors périmètre)
+orch_producer ..> orch_webhook : consomme les topics lifecycle
+orch_webhook ..> orchestrator : POST <webhookUrl>\n(enregistré à l'onboarding)
+
+' L'Orchestrateur appelle KeyService (pas TransactionService)
+orchestrator --> ksr : GET /resolve/{key}\n(avant d'appeler TransactionService)
+
+' Config wiring
+kc ..> tel : provides ContainerFactory\n+ ErrorHandler
+ac ..> ts  : provides ObjectMapper
+ac ..> tel : provides ObjectMapper
+
+@enduml

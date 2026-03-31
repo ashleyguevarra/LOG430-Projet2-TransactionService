@@ -1,0 +1,177 @@
+@startuml class-diagram
+title TransactionService — Class Diagram
+
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+
+package "controller" {
+  class TransactionController {
+    - transactionService : TransactionService
+    + createTransaction(request) : ResponseEntity<TransactionResponse>
+    + getTransaction(id) : ResponseEntity<TransactionResponse>
+    + getAllTransactions() : ResponseEntity<List<TransactionResponse>>
+    + reconcileTransactions(participantId, startDate, endDate) : ResponseEntity<List<TransactionResponse>>
+  }
+
+  class SagaTestController {
+    - transactionService : TransactionService
+    + simulateSettle() : ResponseEntity<TransactionResponse>
+    + simulateReject() : ResponseEntity<TransactionResponse>
+    + simulateExpire() : ResponseEntity<TransactionResponse>
+  }
+}
+
+package "service" {
+  class TransactionService {
+    - repository : TransactionRepository
+    - outboxEventRepository : OutboxEventRepository
+    - objectMapper : ObjectMapper
+    + createTransaction(request) : TransactionResponse
+    + getTransaction(id) : TransactionResponse
+    + getAllTransactions() : List<TransactionResponse>
+    + reconcileTransactions(participantId, startDate, endDate) : List<TransactionResponse>
+    + updateStatus(id, status) : TransactionResponse
+    + createTransactionForTest(status) : Transaction
+    # saveTransactionAndOutbox(request) : OrchestratorNotifyRequest
+  }
+
+  class OutboxPublisher {
+    - outboxEventRepository : OutboxEventRepository
+    - kafkaTemplate : KafkaTemplate
+    + publishPendingEvents() : void
+  }
+
+  class TransactionEventListener {
+    - transactionService : TransactionService
+    - objectMapper : ObjectMapper
+    + onTransactionEvent(payload, topic) : void
+    - mapTopicToState(topic) : TransactionSagaState
+  }
+}
+
+package "entity" {
+  class Transaction {
+    - id : String <<UUID>>
+    - senderKey : String
+    - receiverKey : String
+    - participantId : String
+    - amount : BigDecimal
+    - status : TransactionSagaState
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+  }
+
+  class OutboxEvent {
+    - id : String <<UUID>>
+    - topic : String
+    - payload : String
+    - createdAt : LocalDateTime
+    - published : boolean
+  }
+
+  enum TransactionSagaState {
+    CREATED
+    CREATED_PENDING
+    ACCEPTED
+    ACCEPTED_PENDING
+    ACCEPTED_IN_TREATMENT
+    REFUSED
+    SETTLED
+    REJECTED
+    EXPIRED
+    COMPLETED
+  }
+}
+
+package "repository" {
+  interface TransactionRepository {
+    + findById(id) : Optional<Transaction>
+    + findAll() : List<Transaction>
+    + save(tx) : Transaction
+    + saveAndFlush(tx) : Transaction
+    + findByParticipantIdAndCreatedAtBetween(participantId, start, end) : List<Transaction>
+  }
+
+  interface OutboxEventRepository {
+    + findByPublishedFalse() : List<OutboxEvent>
+    + save(event) : OutboxEvent
+    + findById(id) : Optional<OutboxEvent>
+    + deleteAll() : void
+  }
+}
+
+package "dto" {
+  class TransactionCreateRequest <<record>> {
+    + senderKey : String
+    + receiverKey : String
+    + amount : BigDecimal
+    + participantId : String
+  }
+
+  class TransactionResponse <<record>> {
+    + id : String
+    + senderKey : String
+    + receiverKey : String
+    + amount : BigDecimal
+    + participantId : String
+    + status : TransactionSagaState
+    + createdAt : LocalDateTime
+    + updatedAt : LocalDateTime
+    + {static} fromEntity(tx) : TransactionResponse
+  }
+
+  class OrchestratorNotifyRequest <<record>> {
+    + id : String
+    + receiverKey : String
+    + senderKey : String
+    + amount : double
+    + currentState : TransactionSagaState
+  }
+
+  note bottom of OrchestratorNotifyRequest
+    Utilisé comme payload
+    de l'outbox event
+    (topic: transaction.created)
+  end note
+}
+
+package "config" {
+  class AppConfig {
+    + objectMapper() : ObjectMapper
+  }
+
+  class KafkaConfig {
+    - bootstrapServers : String
+    - groupId : String
+    + consumerFactory() : ConsumerFactory
+    + kafkaListenerContainerFactory(\n  consumerFactory,\n  kafkaTemplate) : ConcurrentKafkaListenerContainerFactory
+    + producerFactory() : ProducerFactory
+    + kafkaTemplate(producerFactory) : KafkaTemplate
+  }
+
+  note bottom of KafkaConfig
+    ErrorHandler : DefaultErrorHandler
+    BackOff : FixedBackOff(1000ms, 2 retries)
+    Recoverer : DeadLetterPublishingRecoverer
+    → {topic}.DLT après épuisement
+  end note
+}
+
+' Relations
+TransactionController    --> TransactionService
+SagaTestController       --> TransactionService
+TransactionService       --> TransactionRepository
+TransactionService       --> OutboxEventRepository
+TransactionService       --> Transaction
+TransactionService       --> TransactionSagaState
+OutboxPublisher          --> OutboxEventRepository
+TransactionEventListener --> TransactionService
+TransactionRepository    --> Transaction
+OutboxEventRepository    --> OutboxEvent
+Transaction              --> TransactionSagaState
+TransactionService       ..> TransactionCreateRequest   : uses
+TransactionService       ..> TransactionResponse        : returns
+TransactionService       ..> OrchestratorNotifyRequest  : creates (outbox payload)
+KafkaConfig              ..> TransactionEventListener   : wires ErrorHandler
+
+@enduml
