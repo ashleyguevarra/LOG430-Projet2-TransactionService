@@ -54,7 +54,3 @@ logging:
   level:
     projet2.banks.transaction: DEBUG
 
-app:
-  services:
-    key-service-url: ${KEY_SERVICE_URL:http://localhost:8080}
-    orchestrator-url: ${ORCHESTRATOR_URL:http://localhost:5000}

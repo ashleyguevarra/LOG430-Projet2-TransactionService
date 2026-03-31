@@ -1,8 +1,6 @@
 package projet2.banks.transaction;
 
 import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -29,9 +27,7 @@ import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import projet2.banks.transaction.dto.KeyResolvedResponse;
 import projet2.banks.transaction.dto.TransactionCreateRequest;
 import projet2.banks.transaction.dto.TransactionResponse;
 import projet2.banks.transaction.entity.OutboxEvent;
@@ -39,8 +35,6 @@ import projet2.banks.transaction.entity.Transaction;
 import projet2.banks.transaction.entity.TransactionSagaState;
 import projet2.banks.transaction.repository.OutboxEventRepository;
 import projet2.banks.transaction.repository.TransactionRepository;
-import projet2.banks.transaction.service.KeyServiceClient;
-import projet2.banks.transaction.service.OrchestratorClient;
 import projet2.banks.transaction.service.OutboxPublisher;
 import projet2.banks.transaction.service.TransactionService;
 
@@ -65,8 +59,6 @@ import projet2.banks.transaction.service.TransactionService;
     "spring.datasource.password=",
     "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect",
     "spring.jpa.hibernate.ddl-auto=create-drop",
-    "app.services.key-service-url=http://localhost:9998",
-    "app.services.orchestrator-url=http://localhost:9997",
     "app.outbox.poll-ms=9999999"
 })
 @DirtiesContext
@@ -79,15 +71,10 @@ class TransactionIntegrationTest {
     @Autowired KafkaTemplate<String, String> kafkaTemplate;
     @Autowired EmbeddedKafkaBroker embeddedKafka;
 
-    @MockitoBean KeyServiceClient keyServiceClient;
-    @MockitoBean OrchestratorClient orchestratorClient;
-
     @BeforeEach
     void setUp() {
         outboxEventRepository.deleteAll();
         transactionRepository.deleteAll();
-        when(keyServiceClient.resolveKey(anyString()))
-            .thenReturn(new KeyResolvedResponse(1, "Test Beneficiary"));
     }
 
     // -----------------------------------------------------------------------

@@ -25,20 +25,14 @@ public class TransactionService {
 
     private final TransactionRepository repository;
     private final OutboxEventRepository outboxEventRepository;
-    private final KeyServiceClient keyServiceClient;
-    private final OrchestratorClient orchestratorClient;
     private final ObjectMapper objectMapper;
 
     public TransactionService(
             TransactionRepository repository,
             OutboxEventRepository outboxEventRepository,
-            KeyServiceClient keyServiceClient,
-            OrchestratorClient orchestratorClient,
             ObjectMapper objectMapper) {
         this.repository = repository;
         this.outboxEventRepository = outboxEventRepository;
-        this.keyServiceClient = keyServiceClient;
-        this.orchestratorClient = orchestratorClient;
         this.objectMapper = objectMapper;
     }
 
@@ -50,13 +44,7 @@ public class TransactionService {
     }
 
     public TransactionResponse createTransaction(TransactionCreateRequest request) {
-        keyServiceClient.resolveKey(request.senderKey());
-        keyServiceClient.resolveKey(request.receiverKey());
-
         OrchestratorNotifyRequest notify = saveTransactionAndOutbox(request);
-
-        orchestratorClient.notifyTransactionCreated(notify);
-
         return getTransaction(notify.id());
     }
 
