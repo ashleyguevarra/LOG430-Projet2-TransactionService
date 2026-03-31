@@ -15,6 +15,7 @@ import projet2.banks.transaction.service.TransactionService;
  * a terminal state in a single HTTP response.
  *
  * Flows simulated:
+ *   /accept → CREATED → ACCEPTED
  *   /settle → CREATED → ACCEPTED → SETTLED
  *   /reject → CREATED → REFUSED  → REJECTED
  *   /expire → CREATED → EXPIRED
@@ -27,6 +28,13 @@ public class SagaTestController {
 
     public SagaTestController(TransactionService transactionService) {
         this.transactionService = transactionService;
+    }
+
+    @GetMapping("/accept")
+    public ResponseEntity<TransactionResponse> simulateAccept() {
+        Transaction tx = transactionService.createTransactionForTest(TransactionSagaState.CREATED);
+        TransactionResponse result = transactionService.updateStatus(tx.getId(), TransactionSagaState.ACCEPTED);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/settle")
