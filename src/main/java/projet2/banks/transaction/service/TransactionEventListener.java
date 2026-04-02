@@ -1,7 +1,5 @@
 package projet2.banks.transaction.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -9,7 +7,9 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
-import projet2.banks.transaction.entity.TransactionSagaState;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Component
 public class TransactionEventListener {
@@ -27,12 +27,18 @@ public class TransactionEventListener {
 
     @KafkaListener(
         topics = {
-            "transaction.routed",
+            "transaction.created",
+            "transaction.created.pending",
             "transaction.accepted",
+            "transaction.accepted.pending",
+            "transaction.accepted.intreatement",
+            "transaction.accepted.InTreatment",
             "transaction.settled",
+            "transaction.refused",
             "transaction.rejected",
             "transaction.failed",
-            "transaction.expired"
+            "transaction.expired",
+            "transaction.routed"
         },
         groupId = "${spring.kafka.consumer.group-id}"
     )
@@ -43,35 +49,11 @@ public class TransactionEventListener {
         log.debug("Received event on topic [{}]: {}", topic, payload);
         try {
             JsonNode node = objectMapper.readTree(payload);
-            String id = node.path("id").asText(null);
-            if (id == null || id.isBlank()) {
-                log.warn("Event on topic [{}] has no id field, skipping", topic);
-                return;
-            }
-
-            TransactionSagaState newStatus = mapTopicToState(topic);
-            if (newStatus == null) {
-                log.warn("No status mapping for topic [{}], skipping", topic);
-                return;
-            }
-
-            transactionService.updateStatus(id, newStatus);
-            log.info("Transaction [{}] status updated to [{}] via topic [{}]", id, newStatus, topic);
+            transactionService.handleInboundKafkaEvent(topic, node);
+            log.info("Processed inbound event on topic [{}]", topic);
 
         } catch (Exception e) {
             log.error("Error processing event on topic [{}]: {}", topic, e.getMessage(), e);
         }
-    }
-
-    private TransactionSagaState mapTopicToState(String topic) {
-        return switch (topic) {
-            case "transaction.routed"   -> TransactionSagaState.CREATED_PENDING;
-            case "transaction.accepted" -> TransactionSagaState.ACCEPTED;
-            case "transaction.settled"  -> TransactionSagaState.SETTLED;
-            case "transaction.rejected" -> TransactionSagaState.REJECTED;
-            case "transaction.failed"   -> TransactionSagaState.REFUSED;
-            case "transaction.expired"  -> TransactionSagaState.EXPIRED;
-            default                     -> null;
-        };
     }
 }

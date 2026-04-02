@@ -1,5 +1,5 @@
 @startuml dss-transaction-flow
-title DSS - Transfert interbancaire complet
+title DSS - Saga Transaction
 
 skinparam sequenceMessageAlign center
 skinparam responseMessageBelowArrow true
@@ -16,261 +16,105 @@ skinparam participant {
     BorderColor Black
 }
 
-' ─── Acteurs ────────────────────────────────────────────────────
-actor       "Client\nPayeur"                         as Receiver  #LightBlue
-participant "Banque B\n(payeuse)\n[webhook enregistré]"  as BankB     #LightBlue
-actor       "Client\nBénéficiaire"                               as Payor     #LightGreen
-participant "Banque A\n(receveuse)\n[webhook enregistré]"    as BankA     #LightGreen
-participant "API Gateway\n:8082"                           as Gateway
-participant "Orchestrateur\n(.NET) :5000"                  as Orch      #FFE0B2
-participant "KeyService\n:8083"                            as KeySvc
-participant "TransactionService\n:8085"                    as TxSvc     #E3F2FD
-database    "transaction-db"                               as DB
-participant "OutboxPublisher\n(@Scheduled)"                as Publisher
-participant "Kafka\n:9092"                                 as Kafka     #FFF9C4
-participant "TransactionEvent\nListener"                   as Listener  #E3F2FD
+participant "Orchestrateur (.NET)" as Orch #FFE0B2
+participant "Kafka" as Kafka #FFF9C4
+participant "TransactionEventListener" as Listener #E3F2FD
+participant "TransactionService" as TxSvc #E3F2FD
+database "transaction-db" as DB
+participant "OutboxPublisher (@Scheduled)" as Publisher
 
-note over BankA, BankB #E8EAF6
-    Les banques ne consomment PAS Kafka directement.
-    L'Orchestrateur consomme les topics et pousse les notifications
-    vers les webhooks enregistrés lors de l'onboarding (ParticipantService).
-    La gestion de ces webhooks est hors du périmètre de ce système.
-end note
+== Phase 1 - Demarrage ==
 
-' ════════════════════════════════════════════════════════════════
-== Phase 1 - Initiation (Banque B → Orchestrateur → TransactionService) ==
-' ════════════════════════════════════════════════════════════════
+Orch -> Kafka : produce("transaction.created", payload)
+activate Kafka
+Kafka --> Orch : Ack
+deactivate Kafka
 
-Receiver -> BankB : Demande de paiement\n(montant, clé destinataire)
-activate BankB
-BankB -> Gateway : POST /api/v2/transactions\n{senderKey, receiverKey, amount, participantId}\n+ X-API-Key
-activate Gateway
-
-Gateway -> Orch : POST /saga/transaction/initiate\n{senderKey, receiverKey, amount, participantId}
-activate Orch
-
-group Résolution des clés - responsabilité Orchestrateur
-    Orch -> KeySvc : GET /api/v2/keys/resolve/{senderKey}
-    activate KeySvc
-    KeySvc --> Orch : 200 {bankId, maskedBeneficiaryName}
-    deactivate KeySvc
-    Orch -> KeySvc : GET /api/v2/keys/resolve/{receiverKey}
-    activate KeySvc
-    KeySvc --> Orch : 200 {bankId, maskedBeneficiaryName}
-    deactivate KeySvc
-end
-
-Orch -> TxSvc : POST /api/v2/transactions\n{senderKey, receiverKey, amount, participantId}\n(clés déjà validées)
+Kafka -> Listener : consume "transaction.created"
+activate Listener
+Listener -> TxSvc : handleInboundKafkaEvent("transaction.created")
 activate TxSvc
 
-group @Transactional atomique - outbox pattern
-    TxSvc -> DB : INSERT transactions (id=UUID, **status=CREATED**)
-    DB --> TxSvc : OK
-    TxSvc -> DB : INSERT outbox_events\n(topic="transaction.created", published=false)
-    DB --> TxSvc : OK
+group TransactionService @Transactional
+  TxSvc -> DB : INSERT transaction (status=CREATED)
+  TxSvc -> DB : UPDATE transaction (status=CREATED_PENDING)
+  TxSvc -> DB : INSERT outbox_events (topic=transaction.created.pending)
 end
 
-TxSvc --> Orch : 201 Created {id, status=CREATED}
 deactivate TxSvc
-Orch --> Gateway : 201 Created
-deactivate Orch
-Gateway --> BankB : 201 Created {transactionId}
-deactivate Gateway
-BankB --> Receiver : Transaction initiée (en attente d'approbation)
-deactivate BankB
+deactivate Listener
 
-' ════════════════════════════════════════════════════════════════
-== Phase 2 - Routage (Outbox → Kafka → Orchestrateur → CREATED_PENDING) ==
-' ════════════════════════════════════════════════════════════════
-
-note over Publisher
-    @Scheduled toutes les 5 s.
-    Lit outbox_events non publiés.
-    Résilience : si Kafka indisponible,
-    published reste false → retenté.
-end note
+== Phase 2 - Publication CREATED_PENDING ==
 
 Publisher -> DB : SELECT outbox_events WHERE published=false
-DB --> Publisher : [OutboxEvent "transaction.created"]
-Publisher -> Kafka : send("transaction.created",\n{id, senderKey, receiverKey, amount, state=CREATED})
+DB --> Publisher : [transaction.created.pending]
+Publisher -> Kafka : send("transaction.created.pending", payload)
 activate Kafka
 Kafka --> Publisher : Ack
 deactivate Kafka
 Publisher -> DB : UPDATE outbox_events SET published=true
 
-Kafka -> Orch : consume "transaction.created" {id, ...}
-activate Orch
-note right of Orch
-    Décision de routage :
-    vérifie les banques impliquées,
-    règles métier, éligibilité.
-end note
-Orch -> Kafka : produce("transaction.routed", {id, ...})
+== Phase 3 - Acceptation ==
+
+Orch -> Kafka : produce("transaction.accepted", payload)
 activate Kafka
 Kafka --> Orch : Ack
 deactivate Kafka
 
-Kafka -> Listener : consume "transaction.routed" {id}
+Kafka -> Listener : consume "transaction.accepted"
 activate Listener
-Listener -> DB : UPDATE status = **CREATED_PENDING**
-deactivate Listener
+Listener -> TxSvc : handleInboundKafkaEvent("transaction.accepted")
+activate TxSvc
 
-note right of Orch
-    L'Orchestrateur notifie BankA
-    via son webhook enregistré :
-    "Nouvelle demande de paiement"
-end note
-Orch -> BankA : POST <webhookUrl_BankA>\n{transactionId, amount, senderKey,\nreceiverKey, status=CREATED_PENDING}
-deactivate Orch
-BankA -> Payor : Notification : nouveau paiement en attente
-
-' ════════════════════════════════════════════════════════════════
-== Phase 3a - Acceptation par le payeur (CREATED_PENDING → ACCEPTED) ==
-' ════════════════════════════════════════════════════════════════
-
-Payor -> BankA : Accepte le paiement
-activate BankA
-BankA -> Gateway : POST /api/v2/transactions/{id}/accept
-activate Gateway
-Gateway -> Orch : POST /saga/transaction/accepted {id}
-activate Orch
-Orch -> Orch : UpdateState → ACCEPTED
-Orch -> Kafka : produce("transaction.accepted", {id, ...})
-activate Kafka
-Kafka --> Orch : Ack
-deactivate Kafka
-Gateway --> BankA : 200 OK
-deactivate Gateway
-deactivate BankA
-
-Kafka -> Listener : consume "transaction.accepted" {id}
-activate Listener
-Listener -> DB : UPDATE status = **ACCEPTED**
-deactivate Listener
-
-note right of Orch
-    L'Orchestrateur notifie BankB
-    via son webhook enregistré :
-    "Paiement accepté, en attente de règlement"
-end note
-Orch -> BankB : POST <webhookUrl_BankB>\n{transactionId, status=ACCEPTED}
-deactivate Orch
-BankB -> Receiver : Notification : paiement accepté
-
-' ════════════════════════════════════════════════════════════════
-== Phase 4 - Règlement (ACCEPTED → ACCEPTED_IN_TREATMENT → SETTLED) ==
-' ════════════════════════════════════════════════════════════════
-
-Payor -> BankA : Effectue le paiement (débit)
-activate BankA
-BankA -> BankA : Débit compte payeur
-BankA -> Gateway : POST /api/v2/transactions/{id}/pay
-activate Gateway
-Gateway -> Orch : POST /saga/transaction/accepted\n(paiement reçu - InTreatment)
-activate Orch
-Orch -> Orch : UpdateState → ACCEPTED_IN_TREATMENT
-Orch -> Kafka : produce("transaction.settled", {id, amount, ...})
-activate Kafka
-Kafka --> Orch : Ack
-deactivate Kafka
-Gateway --> BankA : 200 OK
-deactivate Gateway
-deactivate BankA
-
-Kafka -> Listener : consume "transaction.settled" {id}
-activate Listener
-Listener -> DB : UPDATE status = **SETTLED**
-deactivate Listener
-
-note right of Orch
-    L'Orchestrateur notifie les deux banques
-    via leurs webhooks respectifs.
-end note
-Orch -> BankB : POST <webhookUrl_BankB>\n{transactionId, amount, status=SETTLED}
-Orch -> BankA : POST <webhookUrl_BankA>\n{transactionId, status=SETTLED}
-deactivate Orch
-
-BankB -> BankB : Crédit compte bénéficiaire
-BankB -> Receiver : Notification : paiement reçu ✓
-BankA -> Payor : Notification : paiement effectué ✓
-
-' ════════════════════════════════════════════════════════════════
-== Phase 3b - Refus (CREATED_PENDING → REFUSED → REJECTED) ==
-' ════════════════════════════════════════════════════════════════
-
-group alt Refus du payeur
-    Payor -> BankA : Refuse le paiement
-    activate BankA
-    BankA -> Gateway : POST /api/v2/transactions/{id}/refuse
-    activate Gateway
-    Gateway -> Orch : POST /saga/transaction/refused {id}
-    activate Orch
-    Orch -> Orch : UpdateState → REFUSED
-    Orch -> Kafka : produce("transaction.failed", {id, ...})
-    activate Kafka
-    Kafka --> Orch : Ack
-    deactivate Kafka
-    Gateway --> BankA : 200 OK
-    deactivate Gateway
-    deactivate BankA
-
-    Kafka -> Listener : consume "transaction.failed" {id}
-    activate Listener
-    Listener -> DB : UPDATE status = **REFUSED**
-    deactivate Listener
-
-    Orch -> Kafka : produce("transaction.rejected", {id, ...})
-    activate Kafka
-    Kafka --> Orch : Ack
-    deactivate Kafka
-
-    Kafka -> Listener : consume "transaction.rejected" {id}
-    activate Listener
-    Listener -> DB : UPDATE status = **REJECTED**
-    deactivate Listener
-
-    Orch -> BankB : POST <webhookUrl_BankB>\n{transactionId, status=REJECTED}
-    deactivate Orch
-    BankB -> Receiver : Notification : paiement refusé ✗
+group TransactionService @Transactional
+  TxSvc -> DB : UPDATE transaction (status=ACCEPTED)
+  TxSvc -> DB : UPDATE transaction (status=ACCEPTED_PENDING)
+  TxSvc -> DB : INSERT outbox_events (topic=transaction.accepted.pending)
 end
 
-' ════════════════════════════════════════════════════════════════
-== Phase 5 - Expiration (timeout Orchestrateur → EXPIRED) ==
-' ════════════════════════════════════════════════════════════════
+deactivate TxSvc
+deactivate Listener
 
-group alt Timeout saga (aucune réponse de BankA)
-    note over Orch #LightYellow
-        Timer interne de l'Orchestrateur.
-        Aucune action de TransactionService
-        ni des banques n'est requise.
-    end note
-    Orch -> Kafka : produce("transaction.expired", {id, ...})
-    activate Kafka
-    Kafka --> Orch : Ack
-    deactivate Kafka
+Publisher -> DB : SELECT outbox_events WHERE published=false
+DB --> Publisher : [transaction.accepted.pending]
+Publisher -> Kafka : send("transaction.accepted.pending", payload)
+activate Kafka
+Kafka --> Publisher : Ack
+deactivate Kafka
+Publisher -> DB : UPDATE outbox_events SET published=true
 
-    Kafka -> Listener : consume "transaction.expired" {id}
-    activate Listener
-    Listener -> DB : UPDATE status = **EXPIRED**
-    deactivate Listener
+== Phase 4 - Etats terminaux consommes ==
 
-    Orch -> BankA : POST <webhookUrl_BankA> {transactionId, status=EXPIRED}
-    Orch -> BankB : POST <webhookUrl_BankB> {transactionId, status=EXPIRED}
-    BankA -> Payor : Notification : délai expiré
-    BankB -> Receiver : Notification : transaction expirée
+Orch -> Kafka : produce("transaction.settled" | "transaction.refused" | "transaction.rejected" | "transaction.expired")
+activate Kafka
+Kafka --> Orch : Ack
+deactivate Kafka
+
+Kafka -> Listener : consume event terminal
+activate Listener
+Listener -> TxSvc : handleInboundKafkaEvent(topic)
+activate TxSvc
+
+alt topic = transaction.settled
+  TxSvc -> DB : UPDATE status = SETTLED
+else topic = transaction.refused OR transaction.failed
+  TxSvc -> DB : UPDATE status = REFUSED
+else topic = transaction.rejected
+  TxSvc -> DB : UPDATE status = REJECTED
+else topic = transaction.expired
+  TxSvc -> DB : UPDATE status = EXPIRED
 end
 
-' ════════════════════════════════════════════════════════════════
-== Consultation du statut (à tout moment) ==
-' ════════════════════════════════════════════════════════════════
+deactivate TxSvc
+deactivate Listener
 
-BankB -> Gateway : GET /api/v2/transactions/{id}
-Gateway -> TxSvc : GET /api/v2/transactions/{id}
+== Consultation ==
+
+Orch -> TxSvc : GET /api/v2/transactions/{id}
 activate TxSvc
 TxSvc -> DB : SELECT * FROM transactions WHERE id=?
 DB --> TxSvc : Transaction {id, status, amount, ...}
-TxSvc --> Gateway : 200 OK - TransactionResponse
+TxSvc --> Orch : 200 OK - TransactionResponse
 deactivate TxSvc
-Gateway --> BankB : 200 OK - TransactionResponse
 
 @enduml

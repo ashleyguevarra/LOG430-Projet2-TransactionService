@@ -44,9 +44,12 @@ import projet2.banks.transaction.service.TransactionService;
     bootstrapServersProperty = "spring.kafka.bootstrap-servers",
     topics = {
         "transaction.created",
-        "transaction.routed",
+        "transaction.created.pending",
         "transaction.accepted",
+        "transaction.accepted.pending",
+        "transaction.accepted.intreatement",
         "transaction.settled",
+        "transaction.refused",
         "transaction.rejected",
         "transaction.failed",
         "transaction.expired"
@@ -77,25 +80,35 @@ class TransactionIntegrationTest {
         transactionRepository.deleteAll();
     }
 
-    // -----------------------------------------------------------------------
-    // 1. Service : createTransaction persiste en DB et crée un OutboxEvent
-    // -----------------------------------------------------------------------
-
     @Test
-    void createTransaction_savesTransactionAndCreatesOutboxEvent() {
-        TransactionCreateRequest request = new TransactionCreateRequest(
-            "KEY-SENDER-001", "KEY-RECEIVER-001", new BigDecimal("250.00"),"id_participant");
+    void transactionCreatedEvent_createsTransaction_andQueuesCreatedPendingOutboxEvent() {
+        String txId = UUID.randomUUID().toString();
+        String payload = String.format(
+            """
+            {
+              "id": "%s",
+              "senderKey": "KEY-SENDER-001",
+              "receiverKey": "KEY-RECEIVER-001",
+              "participantSenderKey": "PART-SENDER-001",
+              "amount": 250.00,
+              "currentState": "CREATED",
+              "createdTime": "2026-01-01T12:00:00"
+            }
+            """, txId);
 
-        TransactionResponse response = transactionService.createTransaction(request);
+        kafkaTemplate.send("transaction.created", payload);
 
-        assertThat(response.id()).isNotBlank();
-        assertThat(response.status()).isEqualTo(TransactionSagaState.CREATED);
-        assertThat(transactionRepository.findById(response.id())).isPresent();
+        awaitStatus(txId, TransactionSagaState.CREATED_PENDING);
+
+        Transaction tx = transactionRepository.findById(txId).orElseThrow();
+        assertThat(tx.getSenderKey()).isEqualTo("KEY-SENDER-001");
+        assertThat(tx.getReceiverKey()).isEqualTo("KEY-RECEIVER-001");
+        assertThat(tx.getParticipantId()).isEqualTo("PART-SENDER-001");
 
         List<OutboxEvent> events = outboxEventRepository.findByPublishedFalse();
         assertThat(events).hasSize(1);
-        assertThat(events.get(0).getTopic()).isEqualTo("transaction.created");
-        assertThat(events.get(0).getPayload()).contains(response.id());
+        assertThat(events.get(0).getTopic()).isEqualTo("transaction.created.pending");
+        assertThat(events.get(0).getPayload()).contains(txId);
     }
 
     // -----------------------------------------------------------------------
@@ -106,8 +119,8 @@ class TransactionIntegrationTest {
     void outboxPublisher_publishesPendingEvents_marksAsPublishedAndSendsToKafka() {
         OutboxEvent event = new OutboxEvent();
         event.setId(UUID.randomUUID().toString());
-        event.setTopic("transaction.created");
-        event.setPayload("{\"id\":\"test-tx-id\",\"status\":\"CREATED\"}");
+        event.setTopic("transaction.created.pending");
+        event.setPayload("{\"id\":\"test-tx-id\",\"currentState\":\"CREATED_PENDING\"}");
         event.setPublished(false);
         outboxEventRepository.save(event);
 
@@ -120,7 +133,7 @@ class TransactionIntegrationTest {
 
         Consumer<String, String> consumer = new DefaultKafkaConsumerFactory<>(
             consumerProps, new StringDeserializer(), new StringDeserializer()).createConsumer();
-        embeddedKafka.consumeFromAnEmbeddedTopic(consumer, "transaction.created");
+        embeddedKafka.consumeFromAnEmbeddedTopic(consumer, "transaction.created.pending");
 
         outboxPublisher.publishPendingEvents();
 
@@ -138,27 +151,40 @@ class TransactionIntegrationTest {
     // -----------------------------------------------------------------------
 
     @Test
-    void transactionEventListener_onTransactionRouted_updatesStatusToCreatedPending() {
+    void transactionEventListener_onTransactionCreatedPending_updatesStatusToCreatedPending() {
         TransactionResponse tx = createTestTransaction("KEY-A", "KEY-B", "50.00");
 
-        kafkaTemplate.send("transaction.routed",
+        kafkaTemplate.send("transaction.created.pending",
             String.format("{\"id\":\"%s\"}", tx.id()));
 
         awaitStatus(tx.id(), TransactionSagaState.CREATED_PENDING);
     }
 
     @Test
-    void transactionEventListener_onTransactionAccepted_updatesStatusToAccepted() {
+    void transactionEventListener_onTransactionAccepted_updatesStatusToAcceptedPendingAndQueuesOutbox() {
         TransactionResponse tx = createTestTransaction("KEY-G", "KEY-H", "20.00");
 
         kafkaTemplate.send("transaction.accepted",
             String.format("{\"id\":\"%s\"}", tx.id()));
 
-        awaitStatus(tx.id(), TransactionSagaState.ACCEPTED);
+        awaitStatus(tx.id(), TransactionSagaState.ACCEPTED_PENDING);
+
+        assertThat(outboxEventRepository.findByPublishedFalse())
+            .anyMatch(e -> e.getTopic().equals("transaction.accepted.pending") && e.getPayload().contains(tx.id()));
     }
 
     @Test
-    void transactionEventListener_onTransactionFailed_updatesStatusToRefused() {
+    void transactionEventListener_onTransactionRefused_updatesStatusToRefused() {
+        TransactionResponse tx = createTestTransaction("KEY-I", "KEY-J", "40.00");
+
+        kafkaTemplate.send("transaction.refused",
+            String.format("{\"id\":\"%s\"}", tx.id()));
+
+        awaitStatus(tx.id(), TransactionSagaState.REFUSED);
+    }
+
+    @Test
+    void transactionEventListener_onTransactionFailed_legacyTopicStillUpdatesStatusToRefused() {
         TransactionResponse tx = createTestTransaction("KEY-I", "KEY-J", "40.00");
 
         kafkaTemplate.send("transaction.failed",
@@ -195,6 +221,16 @@ class TransactionIntegrationTest {
             String.format("{\"id\":\"%s\"}", tx.id()));
 
         awaitStatus(tx.id(), TransactionSagaState.EXPIRED);
+    }
+
+    @Test
+    void transactionEventListener_onTransactionAcceptedInTreatmentTypoTopic_updatesStatus() {
+        TransactionResponse tx = createTestTransaction("KEY-T1", "KEY-T2", "10.00");
+
+        kafkaTemplate.send("transaction.accepted.intreatement",
+            String.format("{\"id\":\"%s\"}", tx.id()));
+
+        awaitStatus(tx.id(), TransactionSagaState.ACCEPTED_IN_TREATMENT);
     }
 
     // -----------------------------------------------------------------------

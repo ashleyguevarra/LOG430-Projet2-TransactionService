@@ -1,11 +1,20 @@
 package projet2.banks.transaction.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import projet2.banks.transaction.dto.OrchestratorNotifyRequest;
 import projet2.banks.transaction.dto.TransactionCreateRequest;
 import projet2.banks.transaction.dto.TransactionResponse;
@@ -14,11 +23,6 @@ import projet2.banks.transaction.entity.Transaction;
 import projet2.banks.transaction.entity.TransactionSagaState;
 import projet2.banks.transaction.repository.OutboxEventRepository;
 import projet2.banks.transaction.repository.TransactionRepository;
-
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.UUID;
 
 @Service
 public class TransactionService {
@@ -64,20 +68,32 @@ public class TransactionService {
             tx.getReceiverKey(),
             tx.getSenderKey(),
             tx.getAmount().doubleValue(),
-            TransactionSagaState.CREATED
+            tx.getParticipantId(),
+            null,
+            TransactionSagaState.CREATED,
+            tx.getCreatedAt() != null ? tx.getCreatedAt() : LocalDateTime.now()
         );
-        try {
-            OutboxEvent event = new OutboxEvent();
-            event.setId(UUID.randomUUID().toString());
-            event.setTopic("transaction.created");
-            event.setPayload(objectMapper.writeValueAsString(notify));
-            event.setPublished(false);
-            outboxEventRepository.save(event);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize outbox event for transaction " + tx.getId(), e);
-        }
+        enqueueOutboxEvent("transaction.created", notify, tx.getId());
 
         return notify;
+    }
+
+    @Transactional
+    public void handleInboundKafkaEvent(String topic, JsonNode node) {
+        String normalizedTopic = normalizeTopic(topic);
+        switch (normalizedTopic) {
+            case "transaction.created" -> handleCreatedEvent(node);
+            case "transaction.accepted" -> handleAcceptedEvent(node);
+            case "transaction.created.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.CREATED_PENDING);
+            case "transaction.accepted.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.ACCEPTED_PENDING);
+            case "transaction.accepted.intreatment" -> updateStatus(extractId(node, topic), TransactionSagaState.ACCEPTED_IN_TREATMENT);
+            case "transaction.settled" -> updateStatus(extractId(node, topic), TransactionSagaState.SETTLED);
+            case "transaction.refused", "transaction.failed" -> updateStatus(extractId(node, topic), TransactionSagaState.REFUSED);
+            case "transaction.rejected" -> updateStatus(extractId(node, topic), TransactionSagaState.REJECTED);
+            case "transaction.expired" -> updateStatus(extractId(node, topic), TransactionSagaState.EXPIRED);
+            case "transaction.routed" -> updateStatus(extractId(node, topic), TransactionSagaState.CREATED_PENDING);
+            default -> throw new IllegalArgumentException("Unsupported topic: " + topic);
+        }
     }
 
     public TransactionResponse getTransaction(String id) {
@@ -103,6 +119,21 @@ public class TransactionService {
     }
 
     @Transactional
+    public TransactionResponse transitionStatusAndPublish(String id,
+                                                          TransactionSagaState newStatus,
+                                                          String topicToPublish) {
+        Transaction tx = repository.findById(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "Transaction not found: " + id));
+        tx.setStatus(newStatus);
+        tx = repository.saveAndFlush(tx);
+
+        OrchestratorNotifyRequest notify = toNotifyRequest(tx, newStatus);
+        enqueueOutboxEvent(topicToPublish, notify, tx.getId());
+        return TransactionResponse.fromEntity(tx);
+    }
+
+    @Transactional
     public Transaction createTransactionForTest(TransactionSagaState initialStatus) {
         Transaction tx = new Transaction();
         tx.setId(UUID.randomUUID().toString());
@@ -112,5 +143,98 @@ public class TransactionService {
         tx.setAmount(new BigDecimal("100.00"));
         tx.setStatus(initialStatus);
         return repository.saveAndFlush(tx);
+    }
+
+    private void handleCreatedEvent(JsonNode node) {
+        String id = extractId(node, "transaction.created");
+        Transaction tx = repository.findById(id).orElseGet(() -> saveCreatedTransaction(node, id));
+        transitionStatusAndPublish(tx.getId(), TransactionSagaState.CREATED_PENDING, "transaction.created.pending");
+    }
+
+    private void handleAcceptedEvent(JsonNode node) {
+        String id = extractId(node, "transaction.accepted");
+        updateStatus(id, TransactionSagaState.ACCEPTED);
+        transitionStatusAndPublish(id, TransactionSagaState.ACCEPTED_PENDING, "transaction.accepted.pending");
+    }
+
+    private Transaction saveCreatedTransaction(JsonNode node, String id) {
+        Transaction tx = new Transaction();
+        tx.setId(id);
+        tx.setSenderKey(readRequiredString(node, "senderKey"));
+        tx.setReceiverKey(readRequiredString(node, "receiverKey"));
+        tx.setParticipantId(readParticipantId(node));
+        tx.setAmount(readAmount(node));
+        tx.setStatus(TransactionSagaState.CREATED);
+        return repository.saveAndFlush(tx);
+    }
+
+    private String readParticipantId(JsonNode node) {
+        String participantId = readOptionalString(node, "participantSenderKey");
+        if (participantId == null) {
+            participantId = readOptionalString(node, "participantId");
+        }
+        if (participantId == null) {
+            throw new IllegalArgumentException("Missing participantSenderKey/participantId in created event");
+        }
+        return participantId;
+    }
+
+    private BigDecimal readAmount(JsonNode node) {
+        JsonNode amountNode = node.path("amount");
+        if (!amountNode.isNumber()) {
+            throw new IllegalArgumentException("Missing or invalid amount in created event");
+        }
+        return amountNode.decimalValue();
+    }
+
+    private String readRequiredString(JsonNode node, String fieldName) {
+        String value = readOptionalString(node, fieldName);
+        if (value == null) {
+            throw new IllegalArgumentException("Missing field '" + fieldName + "'");
+        }
+        return value;
+    }
+
+    private String readOptionalString(JsonNode node, String fieldName) {
+        String value = node.path(fieldName).asText(null);
+        return (value == null || value.isBlank()) ? null : value;
+    }
+
+    private String extractId(JsonNode node, String topic) {
+        String id = readOptionalString(node, "id");
+        if (id == null) {
+            throw new IllegalArgumentException("Event on topic '" + topic + "' has no id");
+        }
+        return id;
+    }
+
+    private String normalizeTopic(String topic) {
+        return topic == null ? "" : topic.toLowerCase(Locale.ROOT).replace("intreatement", "intreatment");
+    }
+
+    private OrchestratorNotifyRequest toNotifyRequest(Transaction tx, TransactionSagaState state) {
+        return new OrchestratorNotifyRequest(
+            tx.getId(),
+            tx.getReceiverKey(),
+            tx.getSenderKey(),
+            tx.getAmount().doubleValue(),
+            tx.getParticipantId(),
+            null,
+            state,
+            tx.getCreatedAt() != null ? tx.getCreatedAt() : LocalDateTime.now()
+        );
+    }
+
+    private void enqueueOutboxEvent(String topic, OrchestratorNotifyRequest notify, String transactionId) {
+        try {
+            OutboxEvent event = new OutboxEvent();
+            event.setId(UUID.randomUUID().toString());
+            event.setTopic(topic);
+            event.setPayload(objectMapper.writeValueAsString(notify));
+            event.setPublished(false);
+            outboxEventRepository.save(event);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize outbox event for transaction " + transactionId, e);
+        }
     }
 }
