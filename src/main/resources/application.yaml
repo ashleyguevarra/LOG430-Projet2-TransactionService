@@ -24,32 +24,18 @@ spring:
 server:
   port: 8081
 
-# Observabilité (OpenTelemetry / Micrometer / Actuator) + config équipe
+# Actuator minimal pour dev local / tests. Métriques, Prometheus, traces OTLP :
+# voir LOG430-Projet2-Infra/deployement/transaction-service/application.yaml (monté en Docker).
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info
   endpoint:
     health:
       show-details: always
-      probes:
-        enabled: true
-  metrics:
-    tags:
-      application: ${spring.application.name}
-    distribution:
-      percentiles-histogram:
-        http.server.requests: true
-  tracing:
-    sampling:
-      probability: 1.0
-  otlp:
-    tracing:
-      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
 
-# Niveaux : format console = JSON structuré par défaut (logback-spring.xml), exigence cahier LOG430.
-# Console lisible humain : ./mvnw spring-boot:run -Dspring-boot.run.profiles=human
+# Format des logs : logback-spring.xml (JSON par défaut). Profil lisible : -Dspring-boot.run.profiles=human
 logging:
   level:
     projet2.banks.transaction: DEBUG

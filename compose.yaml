@@ -1,11 +1,6 @@
+# Stack légère (MySQL + Kafka) pour dev sans toute la stack.
+# Observabilité (Jaeger, OTel collector, Prometheus) : docker compose dans LOG430-Projet2-Infra.
 services:
-  jaeger:
-    image: 'jaegertracing/all-in-one:1.76.0'
-    environment:
-      COLLECTOR_OTLP_ENABLED: 'true'
-    ports:
-      - '${JAEGER_UI_PORT:-16686}:16686'
-      - '${OTLP_HTTP_PORT:-4318}:4318'
   # Kafka-compatible broker (API = Kafka). Port 9093 matches spring.kafka.bootstrap-servers default.
   kafka:
     image: 'docker.redpanda.com/redpandadata/redpanda:v24.3.11'
