@@ -90,6 +90,7 @@ class TransactionIntegrationTest {
               "senderKey": "KEY-SENDER-001",
               "receiverKey": "KEY-RECEIVER-001",
               "participantSenderKey": "PART-SENDER-001",
+                            "participantReceiverKey": "PART-RECEIVER-001",
               "amount": 250.00,
               "currentState": "CREATED",
               "createdTime": "2026-01-01T12:00:00"
@@ -103,7 +104,8 @@ class TransactionIntegrationTest {
         Transaction tx = transactionRepository.findById(txId).orElseThrow();
         assertThat(tx.getSenderKey()).isEqualTo("KEY-SENDER-001");
         assertThat(tx.getReceiverKey()).isEqualTo("KEY-RECEIVER-001");
-        assertThat(tx.getParticipantId()).isEqualTo("PART-SENDER-001");
+        assertThat(tx.getParticipantSenderId()).isEqualTo("PART-SENDER-001");
+        assertThat(tx.getParticipantReceiverId()).isEqualTo("PART-RECEIVER-001");
 
         List<OutboxEvent> events = outboxEventRepository.findByPublishedFalse();
         assertThat(events).hasSize(1);
@@ -277,10 +279,10 @@ class TransactionIntegrationTest {
 
         transactionService.createTransaction(
             new TransactionCreateRequest("KEY-REC-S1", "KEY-REC-R1",
-                new BigDecimal("100.00"), participantA));
+                new BigDecimal("100.00"), participantA, "PART-REC-X"));
         transactionService.createTransaction(
             new TransactionCreateRequest("KEY-REC-S2", "KEY-REC-R2",
-                new BigDecimal("200.00"), participantB));
+                new BigDecimal("200.00"), participantB, "PART-REC-Y"));
 
         LocalDateTime start = LocalDateTime.now().minusMinutes(5);
         LocalDateTime end   = LocalDateTime.now().plusMinutes(5);
@@ -289,7 +291,7 @@ class TransactionIntegrationTest {
             transactionService.reconcileTransactions(participantA, start, end);
 
         assertThat(results).hasSize(1);
-        assertThat(results.get(0).participantId()).isEqualTo(participantA);
+        assertThat(results.get(0).participantSenderId()).isEqualTo(participantA);
     }
 
     // -----------------------------------------------------------------------
@@ -328,7 +330,8 @@ class TransactionIntegrationTest {
 
     private TransactionResponse createTestTransaction(String sender, String receiver, String amount) {
         return transactionService.createTransaction(
-            new TransactionCreateRequest(sender, receiver, new BigDecimal(amount),"id_participant"));
+            new TransactionCreateRequest(sender, receiver, new BigDecimal(amount),
+                "id_participant_sender", "id_participant_receiver"));
     }
 
     private void awaitStatus(String txId, TransactionSagaState expected) {

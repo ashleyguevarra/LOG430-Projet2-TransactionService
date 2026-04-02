@@ -1,10 +1,17 @@
 package projet2.banks.transaction.entity;
 
-import jakarta.persistence.*;
-import org.hibernate.annotations.CreationTimestamp;
-import org.hibernate.annotations.UpdateTimestamp;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 
 @Entity
 @Table(name = "transactions")
@@ -20,8 +27,11 @@ public class Transaction {
     @Column(name = "receiver_key", nullable = false)
     private String receiverKey;
 
-    @Column(name = "participant_id", nullable = false)
-    private String participantId;
+    @Column(name = "participant_sender_id", nullable = false)
+    private String participantSenderId;
+
+    @Column(name = "participant_receiver_id", nullable = false)
+    private String participantReceiverId;
 
     @Column(name = "amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
@@ -47,8 +57,11 @@ public class Transaction {
     public String getReceiverKey() { return receiverKey; }
     public void setReceiverKey(String receiverKey) { this.receiverKey = receiverKey; }
 
-    public String getParticipantId() { return participantId; }
-    public void setParticipantId(String participantId) { this.participantId = participantId; }
+    public String getParticipantSenderId() { return participantSenderId; }
+    public void setParticipantSenderId(String participantSenderId) { this.participantSenderId = participantSenderId; }
+
+    public String getParticipantReceiverId() { return participantReceiverId; }
+    public void setParticipantReceiverId(String participantReceiverId) { this.participantReceiverId = participantReceiverId; }
 
     public BigDecimal getAmount() { return amount; }
     public void setAmount(BigDecimal amount) { this.amount = amount; }

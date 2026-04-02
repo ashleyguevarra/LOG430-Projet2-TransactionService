@@ -58,7 +58,8 @@ public class TransactionService {
         tx.setId(UUID.randomUUID().toString());
         tx.setSenderKey(request.senderKey());
         tx.setReceiverKey(request.receiverKey());
-        tx.setParticipantId(request.participantId());
+        tx.setParticipantSenderId(request.participantSenderId());
+        tx.setParticipantReceiverId(request.participantReceiverId());
         tx.setAmount(request.amount());
         tx.setStatus(TransactionSagaState.CREATED);
         tx = repository.saveAndFlush(tx);
@@ -68,8 +69,8 @@ public class TransactionService {
             tx.getReceiverKey(),
             tx.getSenderKey(),
             tx.getAmount().doubleValue(),
-            tx.getParticipantId(),
-            null,
+            tx.getParticipantSenderId(),
+            tx.getParticipantReceiverId(),
             TransactionSagaState.CREATED,
             tx.getCreatedAt() != null ? tx.getCreatedAt() : LocalDateTime.now()
         );
@@ -139,7 +140,8 @@ public class TransactionService {
         tx.setId(UUID.randomUUID().toString());
         tx.setSenderKey("test-sender-key");
         tx.setReceiverKey("test-receiver-key");
-        tx.setParticipantId("test-participant-id");
+        tx.setParticipantSenderId("test-participant-sender-id");
+        tx.setParticipantReceiverId("test-participant-receiver-id");
         tx.setAmount(new BigDecimal("100.00"));
         tx.setStatus(initialStatus);
         return repository.saveAndFlush(tx);
@@ -162,19 +164,31 @@ public class TransactionService {
         tx.setId(id);
         tx.setSenderKey(readRequiredString(node, "senderKey"));
         tx.setReceiverKey(readRequiredString(node, "receiverKey"));
-        tx.setParticipantId(readParticipantId(node));
+        tx.setParticipantSenderId(readParticipantSenderId(node));
+        tx.setParticipantReceiverId(readParticipantReceiverId(node));
         tx.setAmount(readAmount(node));
         tx.setStatus(TransactionSagaState.CREATED);
         return repository.saveAndFlush(tx);
     }
 
-    private String readParticipantId(JsonNode node) {
+    private String readParticipantSenderId(JsonNode node) {
         String participantId = readOptionalString(node, "participantSenderKey");
         if (participantId == null) {
-            participantId = readOptionalString(node, "participantId");
+            participantId = readOptionalString(node, "participantSenderId");
         }
         if (participantId == null) {
-            throw new IllegalArgumentException("Missing participantSenderKey/participantId in created event");
+            throw new IllegalArgumentException("Missing participantSenderKey/participantSenderId in created event");
+        }
+        return participantId;
+    }
+
+    private String readParticipantReceiverId(JsonNode node) {
+        String participantId = readOptionalString(node, "participantReceiverKey");
+        if (participantId == null) {
+            participantId = readOptionalString(node, "participantReceiverId");
+        }
+        if (participantId == null) {
+            throw new IllegalArgumentException("Missing participantReceiverKey/participantReceiverId in created event");
         }
         return participantId;
     }
@@ -218,8 +232,8 @@ public class TransactionService {
             tx.getReceiverKey(),
             tx.getSenderKey(),
             tx.getAmount().doubleValue(),
-            tx.getParticipantId(),
-            null,
+            tx.getParticipantSenderId(),
+            tx.getParticipantReceiverId(),
             state,
             tx.getCreatedAt() != null ? tx.getCreatedAt() : LocalDateTime.now()
         );

@@ -1,16 +1,18 @@
 package projet2.banks.transaction.dto;
 
-import projet2.banks.transaction.entity.Transaction;
-import projet2.banks.transaction.entity.TransactionSagaState;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+
+import projet2.banks.transaction.entity.Transaction;
+import projet2.banks.transaction.entity.TransactionSagaState;
 
 public record TransactionResponse(
     String id,
     String senderKey,
     String receiverKey,
     BigDecimal amount,
-    String participantId,
+    String participantSenderId,
+    String participantReceiverId,
     TransactionSagaState status,
     LocalDateTime createdAt,
     LocalDateTime updatedAt
@@ -21,7 +23,8 @@ public record TransactionResponse(
             t.getSenderKey(),
             t.getReceiverKey(),
             t.getAmount(),
-            t.getParticipantId(),
+            t.getParticipantSenderId(),
+            t.getParticipantReceiverId(),
             t.getStatus(),
             t.getCreatedAt(),
             t.getUpdatedAt()
