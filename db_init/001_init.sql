@@ -21,3 +21,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     published   BOOLEAN      NOT NULL DEFAULT FALSE
 );
+
+-- Seed data
+INSERT INTO transactions (id, sender_key, receiver_key, participant_sender_id, participant_receiver_id, amount, status)
+VALUES ('seed-txn-001', 'key-alice', 'key-charlie', '1', '2', 150.0000, 'CREATED');
