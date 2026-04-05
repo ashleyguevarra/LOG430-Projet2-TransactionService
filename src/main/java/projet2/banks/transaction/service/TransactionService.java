@@ -98,7 +98,7 @@ public class TransactionService {
             case "transaction.accepted" -> handleAcceptedEvent(node);
             case "transaction.created.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.CREATED_PENDING);
             case "transaction.accepted.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.ACCEPTED_PENDING);
-            case "transaction.accepted.intreatment" -> updateStatus(extractId(node, topic), TransactionSagaState.ACCEPTED_IN_TREATMENT);
+            case "transaction.accepted.intreatment" -> handleInTreatmentEvent(node);
             case "transaction.settled" -> updateStatus(extractId(node, topic), TransactionSagaState.SETTLED);
             case "transaction.refused", "transaction.failed" -> updateStatus(extractId(node, topic), TransactionSagaState.REFUSED);
             case "transaction.rejected" -> updateStatus(extractId(node, topic), TransactionSagaState.REJECTED);
@@ -182,6 +182,12 @@ public class TransactionService {
         String id = extractId(node, "transaction.accepted");
         updateStatus(id, TransactionSagaState.ACCEPTED);
         transitionStatusAndPublish(id, TransactionSagaState.ACCEPTED_PENDING, "transaction.accepted.pending");
+    }
+
+    private void handleInTreatmentEvent(JsonNode node) {
+        String id = extractId(node, "transaction.accepted.intreatement");
+        updateStatus(id, TransactionSagaState.ACCEPTED_IN_TREATMENT);
+        transitionStatusAndPublish(id, TransactionSagaState.SETTLED, "transaction.settled");
     }
 
     private Transaction saveCreatedTransaction(JsonNode node, String id) {
