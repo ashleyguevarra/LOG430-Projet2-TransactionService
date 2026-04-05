@@ -9,6 +9,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import projet2.banks.transaction.entity.Transaction;
+import projet2.banks.transaction.entity.TransactionSagaState;
 
 @Repository
 public interface TransactionRepository extends JpaRepository<Transaction, String> {
@@ -23,4 +24,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
                         @Param("participantId") String participantId,
                         @Param("startDate") LocalDateTime startDate,
                         @Param("endDate") LocalDateTime endDate);
+
+        List<Transaction> findByStatusInAndCreatedAtBefore(
+                        List<TransactionSagaState> statuses,
+                        LocalDateTime cutoff);
 }

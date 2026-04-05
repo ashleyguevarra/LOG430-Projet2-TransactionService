@@ -2,6 +2,7 @@ package projet2.banks.transaction.service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -26,6 +27,16 @@ import projet2.banks.transaction.repository.TransactionRepository;
 
 @Service
 public class TransactionService {
+
+    private static final List<TransactionSagaState> EXPIRABLE_STATUSES = List.copyOf(
+        EnumSet.of(
+            TransactionSagaState.CREATED,
+            TransactionSagaState.CREATED_PENDING,
+            TransactionSagaState.ACCEPTED,
+            TransactionSagaState.ACCEPTED_PENDING,
+            TransactionSagaState.ACCEPTED_IN_TREATMENT
+        )
+    );
 
     private final TransactionRepository repository;
     private final OutboxEventRepository outboxEventRepository;
@@ -132,6 +143,20 @@ public class TransactionService {
         OrchestratorNotifyRequest notify = toNotifyRequest(tx, newStatus);
         enqueueOutboxEvent(topicToPublish, notify, tx.getId());
         return TransactionResponse.fromEntity(tx);
+    }
+
+    @Transactional
+    public int expireStaleTransactions(int timeoutHours) {
+        LocalDateTime cutoff = LocalDateTime.now().minusHours(timeoutHours);
+        List<Transaction> staleTransactions = repository.findByStatusInAndCreatedAtBefore(
+            EXPIRABLE_STATUSES,
+            cutoff
+        );
+
+        for (Transaction tx : staleTransactions) {
+            transitionStatusAndPublish(tx.getId(), TransactionSagaState.EXPIRED, "transaction.expired");
+        }
+        return staleTransactions.size();
     }
 
     @Transactional
