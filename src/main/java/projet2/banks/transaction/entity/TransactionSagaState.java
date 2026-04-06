@@ -10,5 +10,6 @@ public enum TransactionSagaState {
     SETTLED,
     REJECTED,
     EXPIRED,
-    COMPLETED
+    COMPLETED,
+    CREATED_DLT
 }

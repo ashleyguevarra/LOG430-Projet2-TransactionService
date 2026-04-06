@@ -100,7 +100,7 @@ public class TransactionService {
             case "transaction.accepted.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.ACCEPTED_PENDING);
             case "transaction.accepted.intreatment" -> handleInTreatmentEvent(node);
             case "transaction.settled" -> updateStatus(extractId(node, topic), TransactionSagaState.SETTLED);
-            case "transaction.refused", "transaction.failed" -> updateStatus(extractId(node, topic), TransactionSagaState.REFUSED);
+            case "transaction.refused", "transaction.failed" -> handleRefusedEvent(node);
             case "transaction.rejected" -> updateStatus(extractId(node, topic), TransactionSagaState.REJECTED);
             case "transaction.expired" -> updateStatus(extractId(node, topic), TransactionSagaState.EXPIRED);
             case "transaction.routed" -> updateStatus(extractId(node, topic), TransactionSagaState.CREATED_PENDING);
@@ -174,18 +174,52 @@ public class TransactionService {
 
     private void handleCreatedEvent(JsonNode node) {
         String id = extractId(node, "transaction.created");
-        Transaction tx = repository.findById(id).orElseGet(() -> saveCreatedTransaction(node, id));
-        transitionStatusAndPublish(tx.getId(), TransactionSagaState.CREATED_PENDING, "transaction.created.pending");
+        if (repository.existsById(id)) {
+            publishDltEvent(id, "transaction.created.dlt");
+        } else {
+            Transaction tx = saveCreatedTransaction(node, id);
+            transitionStatusAndPublish(tx.getId(), TransactionSagaState.CREATED_PENDING, "transaction.created.pending");
+        }
     }
 
     private void handleAcceptedEvent(JsonNode node) {
         String id = extractId(node, "transaction.accepted");
+        Transaction tx = repository.findById(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
+
+        if (tx.getStatus() != TransactionSagaState.CREATED_PENDING) {
+            publishDltEvent(id, "transaction.accepted.dlt");
+            return;
+        }
+
         updateStatus(id, TransactionSagaState.ACCEPTED);
         transitionStatusAndPublish(id, TransactionSagaState.ACCEPTED_PENDING, "transaction.accepted.pending");
     }
 
+    private void handleRefusedEvent(JsonNode node) {
+        String id = extractId(node, "transaction.refused");
+        Transaction tx = repository.findById(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
+
+        if (tx.getStatus() != TransactionSagaState.CREATED_PENDING) {
+            publishDltEvent(id, "transaction.refused.dlt");
+            return;
+        }
+
+        updateStatus(id, TransactionSagaState.REFUSED);
+        transitionStatusAndPublish(id, TransactionSagaState.REJECTED, "transaction.rejected");
+    }
+
     private void handleInTreatmentEvent(JsonNode node) {
         String id = extractId(node, "transaction.accepted.intreatement");
+        Transaction tx = repository.findById(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
+
+        if (tx.getStatus() != TransactionSagaState.ACCEPTED_PENDING) {
+            publishDltEvent(id, "transaction.accepted.intreatment.dlt");
+            return;
+        }
+
         updateStatus(id, TransactionSagaState.ACCEPTED_IN_TREATMENT);
         transitionStatusAndPublish(id, TransactionSagaState.SETTLED, "transaction.settled");
     }
@@ -268,6 +302,13 @@ public class TransactionService {
             state,
             tx.getCreatedAt() != null ? tx.getCreatedAt() : LocalDateTime.now()
         );
+    }
+
+    private void publishDltEvent(String id, String topic) {
+        Transaction tx = repository.findById(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
+        OrchestratorNotifyRequest notify = toNotifyRequest(tx, tx.getStatus());
+        enqueueOutboxEvent(topic, notify, id);
     }
 
     private void enqueueOutboxEvent(String topic, OrchestratorNotifyRequest notify, String transactionId) {
