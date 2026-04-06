@@ -23,6 +23,9 @@ spring:
 
 server:
   port: 8081
+  error:
+    include-message: always
+    include-binding-errors: always
 
 # Actuator minimal pour dev local / tests. Métriques, Prometheus, traces OTLP :
 # voir LOG430-Projet2-Infra/deployement/transaction-service/application.yaml (monté en Docker).
