@@ -32,7 +32,6 @@ public class TransactionEventListener {
             "transaction.accepted",
             "transaction.accepted.pending",
             "transaction.accepted.intreatement",
-            "transaction.accepted.InTreatment",
             "transaction.settled",
             "transaction.refused",
             "transaction.rejected",
