@@ -119,7 +119,7 @@ public class TransactionService {
             case "transaction.accepted" -> handleAcceptedEvent(node);
             case "transaction.created.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.CREATED_PENDING);
             case "transaction.accepted.pending" -> updateStatus(extractId(node, topic), TransactionSagaState.ACCEPTED_PENDING);
-            case "transaction.accepted.intreatment" -> handleInTreatmentEvent(node);
+            case "transaction.accepted.intreatement" -> handleInTreatmentEvent(node);
             case "transaction.settled" -> updateStatus(extractId(node, topic), TransactionSagaState.SETTLED);
             case "transaction.refused", "transaction.failed" -> handleRefusedEvent(node);
             case "transaction.rejected" -> updateStatus(extractId(node, topic), TransactionSagaState.REJECTED);
