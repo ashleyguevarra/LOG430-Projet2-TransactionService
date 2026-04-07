@@ -16,6 +16,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.Optional;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import projet2.banks.transaction.dto.OrchestratorNotifyRequest;
 import projet2.banks.transaction.dto.TransactionCreateRequest;
 import projet2.banks.transaction.dto.TransactionResponse;
@@ -41,14 +49,27 @@ public class TransactionService {
     private final TransactionRepository repository;
     private final OutboxEventRepository outboxEventRepository;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
+    private final Tracer tracer;
 
     public TransactionService(
             TransactionRepository repository,
             OutboxEventRepository outboxEventRepository,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            MeterRegistry meterRegistry,
+            Optional<Tracer> tracerOpt) {
         this.repository = repository;
         this.outboxEventRepository = outboxEventRepository;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
+        this.tracer = tracerOpt.orElse(null);
+
+        // Gauge : taille de la file outbox en attente — exposé via /actuator/prometheus
+        // Permet de détecter un backlog (alerte OutboxLagHigh si > 50)
+        Gauge.builder("saga.outbox.pending_events", outboxEventRepository,
+                        OutboxEventRepository::countByPublishedFalse)
+                .description("Nombre d'événements outbox non encore publiés sur Kafka")
+                .register(meterRegistry);
     }
 
     public List<TransactionResponse> reconcileTransactions(String participantId, LocalDateTime startDate, LocalDateTime endDate) {
@@ -123,26 +144,46 @@ public class TransactionService {
 
     @Transactional
     public TransactionResponse updateStatus(String id, TransactionSagaState newStatus) {
+        Timer.Sample sample = Timer.start(meterRegistry);
         Transaction tx = repository.findById(id)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                 "Transaction not found: " + id));
+        String fromState = tx.getStatus() != null ? tx.getStatus().name() : "UNKNOWN";
         tx.setStatus(newStatus);
-        return TransactionResponse.fromEntity(repository.save(tx));
+        TransactionResponse result = TransactionResponse.fromEntity(repository.save(tx));
+        recordStateTransition(fromState, newStatus.name(), "direct");
+        tagCurrentSpan(id, fromState, newStatus.name());
+        sample.stop(Timer.builder("saga.state.transition.duration")
+                .tag("to_state", newStatus.name())
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .publishPercentileHistogram()
+                .register(meterRegistry));
+        return result;
     }
 
     @Transactional
     public TransactionResponse transitionStatusAndPublish(String id,
                                                           TransactionSagaState newStatus,
                                                           String topicToPublish) {
+        Timer.Sample sample = Timer.start(meterRegistry);
         Transaction tx = repository.findById(id)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                 "Transaction not found: " + id));
+        String fromState = tx.getStatus() != null ? tx.getStatus().name() : "UNKNOWN";
         tx.setStatus(newStatus);
         tx = repository.saveAndFlush(tx);
 
         OrchestratorNotifyRequest notify = toNotifyRequest(tx, newStatus);
         enqueueOutboxEvent(topicToPublish, notify, tx.getId());
-        return TransactionResponse.fromEntity(tx);
+        TransactionResponse result = TransactionResponse.fromEntity(tx);
+        recordStateTransition(fromState, newStatus.name(), topicToPublish);
+        tagCurrentSpan(id, fromState, newStatus.name());
+        sample.stop(Timer.builder("saga.state.transition.duration")
+                .tag("to_state", newStatus.name())
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .publishPercentileHistogram()
+                .register(meterRegistry));
+        return result;
     }
 
     @Transactional
@@ -170,6 +211,69 @@ public class TransactionService {
         tx.setAmount(new BigDecimal("100.00"));
         tx.setStatus(initialStatus);
         return repository.saveAndFlush(tx);
+    }
+
+    /**
+     * Simulation de saga complète en une seule transaction DB.
+     * 3 transactions séparées → 1 : divise par 3 la pression sur HikariCP.
+     * Utilisé uniquement par SagaTestController pour les tests de charge mock.
+     */
+    @Transactional
+    public TransactionResponse simulateSettleInOneTx() {
+        Timer.Sample sample = Timer.start(meterRegistry);
+        Transaction tx = new Transaction();
+        tx.setId(UUID.randomUUID().toString());
+        tx.setSenderKey("test-sender-key");
+        tx.setReceiverKey("test-receiver-key");
+        tx.setParticipantSenderId("test-participant-sender-id");
+        tx.setParticipantReceiverId("test-participant-receiver-id");
+        tx.setAmount(new BigDecimal("100.00"));
+        tx.setStatus(TransactionSagaState.CREATED);
+        repository.save(tx);
+
+        tx.setStatus(TransactionSagaState.ACCEPTED);
+        repository.save(tx);
+        recordStateTransition("CREATED", "ACCEPTED", "direct");
+
+        tx.setStatus(TransactionSagaState.SETTLED);
+        TransactionResponse result = TransactionResponse.fromEntity(repository.save(tx));
+        recordStateTransition("ACCEPTED", "SETTLED", "direct");
+
+        sample.stop(Timer.builder("saga.state.transition.duration")
+                .tag("to_state", "SETTLED")
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .publishPercentileHistogram()
+                .register(meterRegistry));
+        return result;
+    }
+
+    @Transactional
+    public TransactionResponse simulateRejectInOneTx() {
+        Timer.Sample sample = Timer.start(meterRegistry);
+        Transaction tx = new Transaction();
+        tx.setId(UUID.randomUUID().toString());
+        tx.setSenderKey("test-sender-key");
+        tx.setReceiverKey("test-receiver-key");
+        tx.setParticipantSenderId("test-participant-sender-id");
+        tx.setParticipantReceiverId("test-participant-receiver-id");
+        tx.setAmount(new BigDecimal("100.00"));
+        tx.setStatus(TransactionSagaState.CREATED);
+        repository.save(tx);
+
+        tx.setStatus(TransactionSagaState.REFUSED);
+        repository.save(tx);
+        recordStateTransition("CREATED", "REFUSED", "direct");
+
+        tx.setStatus(TransactionSagaState.REJECTED);
+        TransactionResponse result = TransactionResponse.fromEntity(repository.save(tx));
+        recordStateTransition("REFUSED", "REJECTED", "direct");
+
+        sample.stop(Timer.builder("saga.state.transition.duration")
+                .tag("to_state", "REJECTED")
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .publishPercentileHistogram()
+                .register(meterRegistry));
+        return result;
     }
 
     private void handleCreatedEvent(JsonNode node) {
@@ -216,7 +320,7 @@ public class TransactionService {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
 
         if (tx.getStatus() != TransactionSagaState.ACCEPTED_PENDING) {
-            publishDltEvent(id, "transaction.accepted.intreatment.dlt");
+            publishDltEvent(id, "transaction.accepted.intreatement.DLT");
             return;
         }
 
@@ -309,6 +413,12 @@ public class TransactionService {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
         OrchestratorNotifyRequest notify = toNotifyRequest(tx, tx.getStatus());
         enqueueOutboxEvent(topic, notify, id);
+        // Compteur DLT : permet l'alerte SagaDLTEventsDetected dans Prometheus
+        Counter.builder("saga.dlt.events.total")
+                .tag("original_topic", topic.replace(".dlt", ""))
+                .description("Nombre d'événements envoyés en Dead Letter Topic")
+                .register(meterRegistry)
+                .increment();
     }
 
     private void enqueueOutboxEvent(String topic, OrchestratorNotifyRequest notify, String transactionId) {
@@ -321,6 +431,34 @@ public class TransactionService {
             outboxEventRepository.save(event);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize outbox event for transaction " + transactionId, e);
+        }
+    }
+
+    /**
+     * Incrémente le compteur de transitions d'état saga.
+     * Expose la métrique saga_state_transitions_total{from_state, to_state, topic} via Prometheus.
+     */
+    private void recordStateTransition(String fromState, String toState, String topic) {
+        Counter.builder("saga.state.transitions.total")
+                .tag("from_state", fromState)
+                .tag("to_state", toState)
+                .tag("topic", topic)
+                .description("Nombre de transitions d'état du saga transactionnel")
+                .register(meterRegistry)
+                .increment();
+    }
+
+    /**
+     * Enrichit le span OTel courant (auto-instrumenté par Micrometer Tracing)
+     * avec les attributs saga pour corréler les traces Jaeger avec les transactions.
+     */
+    private void tagCurrentSpan(String transactionId, String fromState, String toState) {
+        if (tracer == null) return;
+        Span current = tracer.currentSpan();
+        if (current != null) {
+            current.tag("saga.transaction_id", transactionId)
+                   .tag("saga.from_state", fromState)
+                   .tag("saga.to_state", toState);
         }
     }
 }
