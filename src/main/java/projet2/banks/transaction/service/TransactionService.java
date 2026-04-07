@@ -320,7 +320,7 @@ public class TransactionService {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found: " + id));
 
         if (tx.getStatus() != TransactionSagaState.ACCEPTED_PENDING) {
-            publishDltEvent(id, "transaction.accepted.intreatement.DLT");
+            publishDltEvent(id, "transaction.accepted.intreatement.dlt");
             return;
         }
 
