@@ -39,18 +39,12 @@ public class SagaTestController {
 
     @GetMapping("/settle")
     public ResponseEntity<TransactionResponse> simulateSettle() {
-        Transaction tx = transactionService.createTransactionForTest(TransactionSagaState.CREATED);
-        transactionService.updateStatus(tx.getId(), TransactionSagaState.ACCEPTED);
-        TransactionResponse result = transactionService.updateStatus(tx.getId(), TransactionSagaState.SETTLED);
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(transactionService.simulateSettleInOneTx());
     }
 
     @GetMapping("/reject")
     public ResponseEntity<TransactionResponse> simulateReject() {
-        Transaction tx = transactionService.createTransactionForTest(TransactionSagaState.CREATED);
-        transactionService.updateStatus(tx.getId(), TransactionSagaState.REFUSED);
-        TransactionResponse result = transactionService.updateStatus(tx.getId(), TransactionSagaState.REJECTED);
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(transactionService.simulateRejectInOneTx());
     }
 
     @GetMapping("/expire")

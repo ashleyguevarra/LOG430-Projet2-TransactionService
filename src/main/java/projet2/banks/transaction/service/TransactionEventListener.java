@@ -2,6 +2,7 @@ package projet2.banks.transaction.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.handler.annotation.Header;
@@ -46,13 +47,33 @@ public class TransactionEventListener {
             @Header(KafkaHeaders.RECEIVED_TOPIC) String topic) {
 
         log.debug("Received event on topic [{}]: {}", topic, payload);
+
+        // Extraction du transactionId depuis le payload JSON pour enrichir les logs (MDC)
+        // traceId et spanId sont injectés automatiquement par Micrometer Tracing
+        String transactionId = extractTransactionId(payload);
+        MDC.put("transactionId", transactionId);
+        MDC.put("kafkaTopic", topic);
         try {
             JsonNode node = objectMapper.readTree(payload);
             transactionService.handleInboundKafkaEvent(topic, node);
-            log.info("Processed inbound event on topic [{}]", topic);
+            log.info("Processed inbound event on topic [{}] for transaction [{}]", topic, transactionId);
 
         } catch (Exception e) {
-            log.error("Error processing event on topic [{}]: {}", topic, e.getMessage(), e);
+            log.error("Error processing event on topic [{}] for transaction [{}]: {}",
+                    topic, transactionId, e.getMessage(), e);
+        } finally {
+            MDC.remove("transactionId");
+            MDC.remove("kafkaTopic");
+        }
+    }
+
+    private String extractTransactionId(String payload) {
+        try {
+            JsonNode node = objectMapper.readTree(payload);
+            String id = node.path("id").asText(null);
+            return (id != null && !id.isBlank()) ? id : "unknown";
+        } catch (Exception e) {
+            return "unknown";
         }
     }
 }
