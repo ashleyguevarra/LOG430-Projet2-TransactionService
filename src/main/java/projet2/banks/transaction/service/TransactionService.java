@@ -392,7 +392,7 @@ public class TransactionService {
     }
 
     private String normalizeTopic(String topic) {
-        return topic == null ? "" : topic.toLowerCase(Locale.ROOT).replace("intreatement", "intreatment");
+        return topic == null ? "" : topic.toLowerCase(Locale.ROOT);
     }
 
     private OrchestratorNotifyRequest toNotifyRequest(Transaction tx, TransactionSagaState state) {
